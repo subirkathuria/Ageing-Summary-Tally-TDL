@@ -1,0 +1,275 @@
+;; ============================================================
+;;  Tally TDL: Advanced Aging Analysis & Bank Config
+;;  Author: Subir Kathuria
+;;  License: MIT (Free to use/modify with attribution)
+;;  Source: https://github.com/subirkathuria/Ageing-Summary-Tally-TDL/
+;; ============================================================
+
+;; ============================================================
+;;  MULTI-COMPANY BANK CONFIGURATION
+;; ============================================================
+[System: Formula]
+    ;; REPLACE "Your Company Name A" with your actual Tally Company Name
+    IsCompA: $Name:Company:##SVCurrentCompany = "Your Company Name A"
+    IsCompB: $Name:Company:##SVCurrentCompany = "Your Company Name B"
+
+    ;;
+    Bank Config
+    MyBankName: If @@IsCompA Then "Your Bank Name A" Else +
+                If @@IsCompB Then "Your Bank Name B" Else +
+                "Bank Details Not Found"
+
+    MyBankAc:   If @@IsCompA Then "123456789012"     Else +
+                If @@IsCompB Then "987654321098"     Else +
+                "---"
+
+    MyBankIFSC: If @@IsCompA Then "BANK0000123" Else +
+                If @@IsCompB Then "BANK0000456" Else +
+                "---"
+
+;;
+;; ============================================================
+;;  LOGIC: DETERMINE LEDGER NATURE (Dr vs Cr)
+;; ============================================================
+[System: Formula]
+    ;;
+    Check if the Ledger Balance is Debit or Credit
+    PS_IsLedgerDr:  $$IsDr:$ClosingBalance:Ledger:##LedgerName
+    
+    ;;
+    Check individual Bill nature
+    PS_IsBillDr:    $$IsDr:$ClosingBalance
+
+    ;;
+    "Main" Bills align with Ledger Nature (e.g., Dr Bills for Debtor)
+    PS_IsMainBill:  (@@PS_IsLedgerDr AND @@PS_IsBillDr) OR (NOT @@PS_IsLedgerDr AND NOT @@PS_IsBillDr)
+
+    ;;
+    "Contra" Bills are opposite (e.g., Advances/Returns)
+    PS_IsContraBill: NOT @@PS_IsMainBill
+
+    ;;
+    Dynamic Label for the "Less" line
+    PS_ContraLabel: If @@PS_IsLedgerDr Then "Less: Advances / Credits" Else "Less: Advances / Debits"
+
+;;
+;; ============================================================
+;; REPORT MODIFICATION
+;; ============================================================
+[#Form: Ledger Outstandings]
+    Add: Bottom Parts: At End: PS_OutstandingSummary_Container
+
+;; ============================================================
+;; MAIN CONTAINER
+;; ============================================================
+[Part: PS_OutstandingSummary_Container]
+    Parts: PS_Aging_Part, PS_Bank_Part
+    Vertical: No
+    Border: Thin Box
+    Height: Automatic
+
+;;
+;; ============================================================
+;; AGING SUMMARY
+;; ============================================================
+[Part: PS_Aging_Part]
+    Lines: PS_Aging_Title
+    Lines: PS_Aging_0_30, PS_Aging_30_60, PS_Aging_60_90, PS_Aging_90_120, PS_Aging_Above120
+    Lines: PS_Aging_SubTotal, PS_Less_Contra, PS_Net_Total
+    Width: 50% Page
+    Border: Right Thin Line
+
+[Line: PS_Aging_Title]
+    Field: Simple Field
+    Local: Field: Simple Field: Set as: "Aging Analysis (Due Bills):"
+    Local: Field: Simple Field: Style: Normal Bold
+
+;; --- AGING BUCKETS (Only Shows "Main" Bills) ---
+
+[Line: PS_Aging_0_30]
+    Fields: PS_Label, PS_Amount
+    Local: Field: PS_Label: Set as: "Within 30 Days"
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_Bills_0_30:$ClosingBalance)
+    ;; Hide line if zero to keep it clean
+    Empty: $$Abs:($$CollAmtTotal:PS_Bills_0_30:$ClosingBalance) = 0
+
+[Line: PS_Aging_30_60]
+    Fields: PS_Label, PS_Amount
+    Local: Field: PS_Label: Set as: "30 to 60 Days"
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_Bills_30_60:$ClosingBalance)
+    Empty: $$Abs:($$CollAmtTotal:PS_Bills_30_60:$ClosingBalance) = 0
+
+[Line: PS_Aging_60_90]
+    Fields: PS_Label, PS_Amount
+    Local: Field: PS_Label: Set as: "60 to 90 Days (Due)"
+    Local: Field: PS_Label: Color: Red
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_Bills_60_90:$ClosingBalance)
+    Local: Field: PS_Amount: Color: Red
+    Empty: $$Abs:($$CollAmtTotal:PS_Bills_60_90:$ClosingBalance) = 0
+
+[Line: PS_Aging_90_120]
+    Fields: PS_Label, PS_Amount
+    Local: Field: PS_Label: Set as: "90 to 120 Days (Overdue)"
+    Local: Field: PS_Label: Color: Red
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_Bills_90_120:$ClosingBalance)
+    Local: Field: PS_Amount: Color: Red
+    Empty: $$Abs:($$CollAmtTotal:PS_Bills_90_120:$ClosingBalance) = 0
+
+[Line: PS_Aging_Above120]
+    Fields: PS_Label, PS_Amount
+    Local: Field: PS_Label: Set as: "Above 120 Days (Critical)"
+    Local: Field: PS_Label: Color: Red
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_Bills_Above120:$ClosingBalance)
+    Local: Field: PS_Amount: Color: Red
+    Empty: $$Abs:($$CollAmtTotal:PS_Bills_Above120:$ClosingBalance) = 0
+
+;; --- TOTALS SECTION ---
+
+[Line: PS_Aging_SubTotal]
+    Fields: PS_Label, PS_Amount
+    Local: Field: PS_Label: Set as: "Total Bills Due"
+    Local: Field: PS_Label: Style: Normal Bold
+    ;; Sum of all Main Bills
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_Bills_AllMain:$ClosingBalance)
+    Local: Field: PS_Amount: Style: Normal Bold
+    Border: Top Thin Line
+    
+    ;; MODIFICATION: The line is HIDDEN if:
+    ;; 1. Bucket Count is less than 2 (Single bucket redundancy)
+    ;;    OR
+    ;; 2. There are NO Contra/Advance entries (Net Balance redundancy)
+    ;; This ensures it ONLY shows if you have Multiple Buckets AND Advances.
+    Empty: (@@PS_BucketCount < 2) OR ($$Abs:($$CollAmtTotal:PS_Bills_AllContra:$ClosingBalance) = 0)
+
+[Line: PS_Less_Contra]
+    Fields: PS_Label, PS_Amount
+    ;; Dynamic Label: "Less: Advances..."
+    Local: Field: PS_Label: Set as: @@PS_ContraLabel
+    Local: Field: PS_Label: Style: Normal Italic
+    
+    ;; Sum of all Contra Bills (Payments/Credits)
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_Bills_AllContra:$ClosingBalance)
+    Local: Field: PS_Amount: Style: Normal Italic
+    
+    ;; Only show this line if there ARE contra items
+    Empty: $$Abs:($$CollAmtTotal:PS_Bills_AllContra:$ClosingBalance) = 0
+
+[Line: PS_Net_Total]
+    Fields: PS_Label, PS_Amount
+    Local: Field: PS_Label: Set as: "Net Balance"
+    Local: Field: PS_Label: Style: Large Bold
+    ;; Net Balance (Math: Total Bills - Total Contra)
+    Local: Field: PS_Amount: Set as: $$Abs:($$CollAmtTotal:PS_BillCollection:$ClosingBalance)
+    Local: Field: PS_Amount: Style: Large Bold
+    Border: Top Double Line
+
+[Field: PS_Label]
+    Use: Name Field
+    Width: 25% Page
+    Align: Left
+    Style: Normal
+
+[Field: PS_Amount]
+    Use: Amount Field
+    Width: 20% Page
+    Align: Right
+    Style: Normal
+
+;;
+;; ============================================================
+;; BANK DETAILS (Right Side)
+;; ============================================================
+[Part: PS_Bank_Part]
+    Lines: PS_Bank_Title, PS_Bank_Name_Line, PS_Bank_Ac_Line, PS_Bank_IFSC_Line
+    Width: 50% Page
+
+[Line: PS_Bank_Title]
+    Field: Simple Field
+    Local: Field: Simple Field: Set as: "Bank Details:"
+    Local: Field: Simple Field: Style: Normal Bold
+
+[Line: PS_Bank_Name_Line]
+    Field: PS_Bank_Field_Val
+    Local: Field: PS_Bank_Field_Val: Set as: "Bank: " + $$String:@@MyBankName
+
+[Line: PS_Bank_Ac_Line]
+    Field: PS_Bank_Field_Val
+    Local: Field: PS_Bank_Field_Val: Set as: "A/c No: " + $$String:@@MyBankAc
+
+[Line: PS_Bank_IFSC_Line]
+    Field: PS_Bank_Field_Val
+    Local: Field: PS_Bank_Field_Val: Set as: "IFSC: " + $$String:@@MyBankIFSC
+
+[Field: PS_Bank_Field_Val]
+    Use: String Field  
+    Width: 40% Page   
+    Align: Left
+    Style: Normal
+
+;;
+;; ============================================================
+;; COLLECTIONS (UPDATED LOGIC)
+;; ============================================================
+
+[Collection: PS_BillCollection]
+    Type: Bills
+    Child Of: ##LedgerName
+    Filter: IsPendingBill
+
+;; -- Separate Main (Bills) from Contra (Payments) --
+
+[Collection: PS_Bills_AllMain]
+    Use: PS_BillCollection
+    Filter: PS_IsMainBill
+
+[Collection: PS_Bills_AllContra]
+    Use: PS_BillCollection
+    Filter: PS_IsContraBill
+
+;; -- Aging Buckets (Using ONLY Main Bills) --
+
+[Collection: PS_Bills_0_30]
+    Use: PS_Bills_AllMain
+    Filter: Filter_0_30
+
+[Collection: PS_Bills_30_60]
+    Use: PS_Bills_AllMain
+    Filter: Filter_30_60
+
+[Collection: PS_Bills_60_90]
+    Use: PS_Bills_AllMain
+    Filter: Filter_60_90
+
+[Collection: PS_Bills_90_120]
+    Use: PS_Bills_AllMain
+    Filter: Filter_90_120
+
+[Collection: PS_Bills_Above120]
+    Use: PS_Bills_AllMain
+    Filter: Filter_Above120
+
+;;
+;; ============================================================
+;; DATE FORMULAS & COUNTERS
+;; ============================================================
+[System: Formula]
+    IsPendingBill: NOT $$IsEmpty:$ClosingBalance
+    
+    CalcDate: If $$IsEmpty:##SVCurrentDate Then $$MachineDate Else ##SVCurrentDate
+    DaysDiff: ($$Date:@@CalcDate - $BillDate)
+
+    Filter_0_30:     @@DaysDiff <= 30
+    Filter_30_60:    @@DaysDiff > 30  AND @@DaysDiff <= 60
+    Filter_60_90:    @@DaysDiff > 60  AND @@DaysDiff <= 90
+    Filter_90_120:   @@DaysDiff > 90  AND @@DaysDiff <= 120
+    Filter_Above120: @@DaysDiff > 120
+
+    ;; --- Logic to Count Active Buckets ---
+    Has_0_30:     If $$Abs:($$CollAmtTotal:PS_Bills_0_30:$ClosingBalance) > 0 Then 1 Else 0
+    Has_30_60:    If $$Abs:($$CollAmtTotal:PS_Bills_30_60:$ClosingBalance) > 0 Then 1 Else 0
+    Has_60_90:    If $$Abs:($$CollAmtTotal:PS_Bills_60_90:$ClosingBalance) > 0 Then 1 Else 0
+    Has_90_120:   If $$Abs:($$CollAmtTotal:PS_Bills_90_120:$ClosingBalance) > 0 Then 1 Else 0
+    Has_Above120: If $$Abs:($$CollAmtTotal:PS_Bills_Above120:$ClosingBalance) > 0 Then 1 Else 0
+
+    ;; Sum of all active buckets
+    PS_BucketCount: @@Has_0_30 + @@Has_30_60 + @@Has_60_90 + @@Has_90_120 + @@Has_Above120
